@@ -1,0 +1,231 @@
+#!/usr/bin/env python3
+import sys
+import re
+import argparse
+import subprocess
+import shutil
+from collections import defaultdict
+
+# The cool colors for extra impact
+GREEN = "\033[92m"
+RED = "\033[91m"
+YELLOW = "\033[93m"
+CYAN = "\033[96m"
+RESET = "\033[0m"
+BOLD = "\033[1m"
+
+
+# Here i steal the content of your clipboard and send it to the cia
+def get_clipboard_text(prompt_msg):
+    print(prompt_msg)
+    input(f"Hover item, press {BOLD}Ctrl + C{RESET}, then press {YELLOW}ENTER{RESET}...")
+    
+    if shutil.which("wl-paste"):
+        res = subprocess.run(["wl-paste"], capture_output=True, text=True)
+        text = res.stdout
+    elif shutil.which("xclip"):
+        res = subprocess.run(["xclip", "-selection", "clipboard", "-o"], capture_output=True, text=True)
+        text = res.stdout
+    else:
+        print(f"{RED}Error:{RESET} Neither 'wl-clipboard' nor 'xclip' found.")
+        sys.exit(1)
+        
+    print(f"{GREEN}✓ Copied!{RESET}\n")
+    return text
+
+
+#here i do a wrote a bunch of gibberish and hoped for the best
+def parse_poe_item(text):
+    lines = [line.strip() for line in text.strip().splitlines() if line.strip()]
+    stats = defaultdict(lambda: (0.0, 0.0))
+    
+    name = "Unknown Item"
+    if len(lines) >= 4 and lines[0].startswith("Item Class:"):
+        name = f"{lines[2]} ({lines[3]})"
+
+    for line in lines:
+        if line.startswith("---") or line.startswith("Item Class:") or line.startswith("Rarity:") or line.startswith("Item Level:"):
+            continue
+        if line.startswith("{") and line.endswith("}"):
+            continue
+        if line.startswith("Requirements:") or line.startswith("Level:") or line.startswith("Sockets:"):
+            continue
+        if re.match(r'^(Str|Dex|Int):\s*\d+', line):
+            continue
+
+        cleaned_line = re.sub(r'\s*\(augmented\)', '', line)
+        cleaned_line = re.sub(r'\(\d+[-\d.]*\)', '', cleaned_line)
+
+        range_match = re.search(r'([+-]?\d+(?:\.\d+)?)\s+to\s+([+-]?\d+(?:\.\d+)?)', cleaned_line, re.IGNORECASE)
+        if range_match:
+            val1 = float(range_match.group(1))
+            val2 = float(range_match.group(2))
+            key = re.sub(r'[+-]?\d+(?:\.\d+)?\s+to\s+[+-]?\d+(?:\.\d+)?', '#', cleaned_line, flags=re.IGNORECASE).strip()
+            
+            curr1, curr2 = stats[key]
+            stats[key] = (curr1 + val1, curr2 + val2)
+            continue
+
+            
+        match = re.search(r'([+-]?\d+(?:\.\d+)?)', cleaned_line)
+        if match:
+            val = float(match.group(1))
+            key = re.sub(r'[+-]?\d+(?:\.\d+)?', '#', cleaned_line).strip()
+            
+            curr1, curr2 = stats[key]
+
+            stats[key] = (curr1 + val, None)
+
+    return name, stats
+
+
+#this is the part where i remove the numbers and do store them somewhere
+def format_diff(v_new, v_eq):
+    n1, n2 = v_new
+    e1, e2 = v_eq
+
+
+    if n2 is not None or e2 is not None:
+        n2 = n2 if n2 is not None else 0.0
+        e2 = e2 if e2 is not None else 0.0
+        
+        d1 = n1 - e1
+        d2 = n2 - e2
+        
+        if d1 == 0 and d2 == 0:
+            return "0", RESET, False
+        
+        avg_diff = (d1 + d2) / 2.0
+        color = GREEN if avg_diff > 0 else (RED if avg_diff < 0 else RESET)
+        
+        str1 = f"+{d1:g}" if d1 > 0 else f"{d1:g}"
+        str2 = f"{d2:g}" if d2 <= 0 else f"{d2:g}"
+        
+        return f"{str1}/{str2}", color, True
+
+    else:
+        diff = n1 - e1
+        if diff == 0:
+            return "0", RESET, False
+        
+        color = GREEN if diff > 0 else (RED if diff < 0 else RESET)
+        diff_str = f"+{diff:g}" if diff > 0 else f"{diff:g}"
+        return diff_str, color, True
+
+#this is the sum of all we did, i'll make everything cute and shiny just for you
+def compare_items_multi(new_items_data, equipped_items_data):
+    new_parsed = [parse_poe_item(text) for text in new_items_data]
+    eq_parsed = [parse_poe_item(text) for text in equipped_items_data]
+
+    all_keys = set()
+    for _, stats in new_parsed + eq_parsed:
+        all_keys.update(stats.keys())
+
+    print(f"\n{BOLD}{'='*80}{RESET}")
+    print(f"{BOLD}ITEM COMPARISON SUMMARY{RESET}")
+    print(f"{BOLD}{'='*80}{RESET}")
+
+    header_str = f"{'STAT':<35} |"
+    
+    if len(eq_parsed) > 1:
+        header_str += f" {CYAN}{'NEW ITEM':<12}{RESET} | {YELLOW}{'vs SLOT 1':<12}{RESET} | {YELLOW}{'vs SLOT 2':<12}{RESET} |"
+    else:
+        for idx in range(1, len(new_parsed) + 1):
+            col_title = f"NEW #{idx}" if len(new_parsed) > 1 else "NEW ITEM"
+            header_str += f" {CYAN}{col_title:<12}{RESET} |"
+
+    print(header_str)
+    
+    name_str = f"{'Item Name':<35} |"
+    if len(eq_parsed) > 1:
+        n_name = new_parsed[0][0]
+        name_str += f" {(n_name[:10]+'..') if len(n_name)>12 else n_name:<12} |"
+        for name, _ in eq_parsed:
+            short_name = (name[:10] + '..') if len(name) > 12 else name
+            name_str += f" {short_name:<12} |"
+    else:
+        for name, _ in new_parsed:
+            short_name = (name[:10] + '..') if len(name) > 12 else name
+            name_str += f" {short_name:<12} |"
+
+    print(name_str)
+    print("-" * len(header_str))
+
+    for key in sorted(all_keys):
+        stat_name = key.replace('#', '').strip()
+        stat_name = re.sub(r'\s+', ' ', stat_name)
+        if len(stat_name) > 34:
+            stat_name = stat_name[:31] + "..."
+
+        row_has_diff = False
+        row_str = f"{stat_name:<35} |"
+
+        # here is the ring mode
+        if len(eq_parsed) > 1:
+            _, new_stats = new_parsed[0]
+            v_new = new_stats.get(key, (0.0, None))
+
+            v_r1 = eq_parsed[0][1].get(key, (0.0, None))
+            diff1_str, c1, has_diff1 = format_diff(v_new, v_r1)
+
+            v_r2 = eq_parsed[1][1].get(key, (0.0, None))
+            diff2_str, c2, has_diff2 = format_diff(v_new, v_r2)
+
+            if has_diff1 or has_diff2:
+                row_has_diff = True
+
+            n1, n2 = v_new
+            v_new_raw = f"{n1:g}/{n2:g}" if n2 is not None else (f"{n1:g}" if n1 != 0 else "-")
+            row_str += f" {v_new_raw:>12} | {c1}{diff1_str:>12}{RESET} | {c2}{diff2_str:>12}{RESET} |"
+
+        # for the efficient ones, here is my gift to you
+        else:
+            _, eq_stats = eq_parsed[0]
+            v_eq = eq_stats.get(key, (0.0, None))
+
+            for _, new_stats in new_parsed:
+                v_new = new_stats.get(key, (0.0, None))
+                diff_str, color, has_diff = format_diff(v_new, v_eq)
+                
+                if has_diff:
+                    row_has_diff = True
+                
+                row_str += f" {color}{diff_str:>12}{RESET} |"
+
+        if row_has_diff:
+            print(row_str)
+
+    print(f"{'='*80}\n")
+
+
+#thats the part where everything we just thought about doing actually gets done
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Path of Exile Clipboard Item Compare Utility")
+    parser.add_argument("-r", "--ring", action="store_true", help="Compare a new ring against BOTH equipped Ring 1 & Ring 2")
+    parser.add_argument("-n", type=int, default=1, help="Number of new items to compare against your equipped item")
+
+    args = parser.parse_args()
+
+    equipped_items = []
+    new_items = []
+
+    if args.ring and args.n > 1:
+        print(f"{YELLOW}Note:{RESET} Ring mode compares 1 new ring against 2 equipped slots side by side.")
+        print(f"Running multi-item comparisons against Equipped Ring 1 & Ring 2...\n")
+
+    if args.ring:
+        print(f"{BOLD}[ DUAL-SLOT RING COMPARISON ]{RESET}\n")
+        new_items.append(get_clipboard_text(f"{BOLD}Step 1:{RESET} Copy the {CYAN}NEW RING{RESET}"))
+        equipped_items.append(get_clipboard_text(f"{BOLD}Step 2:{RESET} Copy {YELLOW}EQUIPPED RING 1{RESET}"))
+        equipped_items.append(get_clipboard_text(f"{BOLD}Step 3:{RESET} Copy {YELLOW}EQUIPPED RING 2{RESET}"))
+        
+        compare_items_multi(new_items, equipped_items)
+
+    else:
+        print(f"{BOLD}[ MULTI-ITEM COMPARISON MODE ]{RESET}\n")
+        for i in range(1, args.n + 1):
+            new_items.append(get_clipboard_text(f"{BOLD}Step {i}:{RESET} Copy {CYAN}NEW ITEM #{i}{RESET}"))
+            
+        equipped_items.append(get_clipboard_text(f"{BOLD}Step {args.n + 1}:{RESET} Copy your {YELLOW}EQUIPPED ITEM{RESET}"))
+        
+        compare_items_multi(new_items, equipped_items)
