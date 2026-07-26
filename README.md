@@ -16,3 +16,15 @@ poe-diff -n 3
 
 # Ring Mode: Compare 1 new ring against Ring 1 & Ring 2
 poe-diff -r
+```
+
+## Installation
+
+### Arch Linux (AUR)
+
+`poe-diff` is available in the [AUR](https://aur.archlinux.org/packages/poe-diff). You can install it using an AUR helper like `yay` or `paru`:
+
+```bash
+yay -S poe-diff
+# or
+paru -S poe-diff
